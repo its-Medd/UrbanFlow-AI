@@ -8,7 +8,11 @@ import anthropic
 from typing import List, Dict, Any, Optional, Callable
 import json
 import logging
+import os
 import re
+from types import SimpleNamespace
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from agentsumo.client import SUMOMCPClient
 from agentsumo.core import AgentSUMOConfig
@@ -17,6 +21,14 @@ from agentsumo.agent.prompts import PromptBuilder
 
 
 logger = logging.getLogger("agentsumo.agent")
+
+
+SPECIALIST_AGENTS = (
+    ("Scenario Architect", "Review the full setup: location and study area, required inputs, network generation, demand source, route generation, and assumptions. Identify missing parameters and the next valid setup stage."),
+    ("Traffic Analyst", "Review demand and baseline setup: likely congestion mechanisms, whether traffic assumptions fit the study area, and which baseline metrics and outputs are needed."),
+    ("Policy Strategist", "Review whether a policy experiment is in scope. Propose at most two testable interventions using routing, lane, speed, or signal changes; keep baseline separate and state trade-offs."),
+    ("Impact Analyst", "Review evaluation setup: define comparison metrics such as travel time, waiting time, queues, throughput, and emissions; identify required outputs, limits, and uncertainty."),
+)
 
 
 class AgentSUMO:
@@ -78,14 +90,33 @@ class AgentSUMO:
         self._enable_filesystem_mcp = enable_filesystem_mcp  # Whether to enable Filesystem MCP
         self._filesystem_directories = filesystem_directories  # List of directories the Filesystem MCP can access
         self._inject_state = inject_state  # [Temporary] Whether to inject state. For SUMOLanguageExpert.
-        # Claude API initialization
-        self.claude = anthropic.Anthropic(
-            api_key=AgentSUMOConfig.get_claude_api_key()
-        )
+        # Reasoning provider initialization. Groq exposes an OpenAI-compatible
+        # endpoint, while the existing Anthropic implementation remains intact.
+        self.provider = AgentSUMOConfig.get_llm_provider()
+        if self.provider == "anthropic":
+            self.claude = anthropic.Anthropic(
+                api_key=AgentSUMOConfig.get_claude_api_key()
+            )
+            self.groq = None
+        else:
+            try:
+                from openai import OpenAI
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Groq support requires the 'openai' package. Run 'uv sync'."
+                ) from exc
+            self.groq = OpenAI(
+                api_key=AgentSUMOConfig.get_groq_api_key(),
+                base_url="https://api.groq.com/openai/v1",
+            )
+            self.claude = None
 
         # Settings
-        self.model = model or AgentSUMOConfig.DEFAULT_MODEL
+        default_model = (AgentSUMOConfig.DEFAULT_MODEL if self.provider == "anthropic"
+                         else AgentSUMOConfig.DEFAULT_GROQ_MODEL)
+        self.model = model or os.environ.get("LLM_MODEL") or default_model
         self.max_tokens = max_tokens
+        self.multi_agent_enabled = os.environ.get("MULTI_AGENT_MODE", "true").strip().lower() not in {"0", "false", "no"}
 
         # Logging
         if enable_logging:
@@ -121,6 +152,9 @@ class AgentSUMO:
 
         # Progress callback for real-time updates (optional)
         self._progress_callback: Optional[Callable[[str, str], None]] = None
+        # Durable operation records make the agent's actual tool orchestration
+        # inspectable in the web interface and after a server restart.
+        self._active_execution: Optional[Dict[str, Any]] = None
 
         logger.info("AgentSUMO initialization complete")
 
@@ -136,6 +170,8 @@ class AgentSUMO:
 
     async def _emit_progress(self, tool_name: str, status: str, message: str = None):
         """Emit progress update if callback is set"""
+        if tool_name != "__intermediate_text__":
+            self._record_execution_step(tool_name, status, message)
         if self._progress_callback:
             try:
                 import inspect
@@ -144,6 +180,119 @@ class AgentSUMO:
                     await result
             except Exception as e:
                 logger.warning(f"Progress callback error: {e}")
+
+    def _execution_log_path(self):
+        return AgentSUMOConfig.OUTPUT_DIR / ".agent_executions.json"
+
+    def _begin_execution(self, user_message: str) -> None:
+        """Start a concise, non-sensitive audit record for a chat operation."""
+        self._active_execution = {
+            "id": str(uuid4()),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+            "status": "running",
+            "request_preview": user_message.strip().replace("\n", " ")[:180],
+            "steps": [],
+            "error": None,
+        }
+        self._save_execution_history()
+
+    def _record_execution_step(self, tool_name: str, status: str, message: Optional[str]) -> None:
+        if not self._active_execution:
+            return
+        self._active_execution["steps"].append({
+            "tool": tool_name,
+            "status": status,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "message": (message or "")[:240],
+        })
+        self._save_execution_history()
+
+    def _finish_execution(self, status: str, error: Optional[Exception] = None) -> None:
+        if not self._active_execution:
+            return
+        self._active_execution["status"] = status
+        self._active_execution["finished_at"] = datetime.now(timezone.utc).isoformat()
+        self._active_execution["error"] = str(error)[:240] if error else None
+        self._save_execution_history()
+        self._active_execution = None
+
+    def _save_execution_history(self) -> None:
+        """Persist the active execution plus the newest 49 completed runs."""
+        try:
+            path = self._execution_log_path()
+            history = []
+            if path.exists():
+                history = json.loads(path.read_text())
+            if self._active_execution:
+                history = [r for r in history if r.get("id") != self._active_execution["id"]]
+                history.insert(0, self._active_execution)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(history[:50], indent=2))
+        except Exception as exc:
+            logger.warning("Could not save execution history: %s", exc)
+
+    async def _run_specialist_agents(self, user_message: str) -> str:
+        """Gather independent, advisory findings before the coordinator uses tools.
+
+        Specialists never receive MCP tools or execute side effects. The
+        coordinator remains the only agent that can create files or run SUMO.
+        """
+        if not self.multi_agent_enabled:
+            return ""
+
+        state_summary = {
+            key: self.simulation_state.get(key)
+            for key in ("current_network", "current_routes", "last_results", "current_db")
+        }
+        findings = []
+        for name, role in SPECIALIST_AGENTS:
+            await self._emit_progress(name, "started", f"{name} is reviewing the mission")
+            try:
+                finding = self._call_specialist(name, role, user_message, state_summary)
+                findings.append(f"### {name}\n{finding}")
+                await self._emit_progress(name, "completed", f"{name} submitted a finding")
+            except Exception as exc:
+                # A specialist failure must not prevent the coordinator from
+                # completing a simulation request.
+                logger.warning("%s failed: %s", name, exc)
+                await self._emit_progress(name, "error", str(exc))
+
+        if not findings:
+            return ""
+        return "\n\n[Multi-agent advisory findings — verify with tools and simulation results]\n" + "\n\n".join(findings)
+
+    def _call_specialist(
+        self, name: str, role: str, user_message: str, state_summary: Dict[str, Any]
+    ) -> str:
+        """Run one isolated specialist with no tool access or shared history."""
+        system = (
+            f"You are the {name} in an urban-mobility simulation team. {role} "
+            "Return a concise, actionable briefing of at most 140 words. "
+            "Do not claim measurements you have not seen, do not call tools, "
+            "and clearly mark assumptions."
+        )
+        prompt = (
+            f"Mission: {user_message}\n\n"
+            f"Current simulation state: {json.dumps(state_summary, default=str)}"
+        )
+        if self.provider == "groq":
+            response = self.groq.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                max_tokens=260,
+            )
+            return (response.choices[0].message.content or "No finding returned.").strip()
+
+        response = self.claude.messages.create(
+            model=self.model,
+            max_tokens=260,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return "\n".join(
+            block.text for block in response.content if getattr(block, "type", None) == "text"
+        ).strip() or "No finding returned."
 
     async def start(self, db_path: Optional[str] = None):
         """
@@ -204,13 +353,7 @@ class AgentSUMO:
             if db_path is None and self._enable_sqlite_mcp is not True:
                 # Auto-detect DB file from default path
                 try:
-                    try:
-                        # dev-ko branch ships the live source under
-                        # agentsumo/server/; main branch uses the published
-                        # agentsumo-mcp package as the fallback path.
-                        from agentsumo.server.utils.path_utils import get_output_path
-                    except ImportError:
-                        from agentsumo_mcp.utils.path_utils import get_output_path
+                    from agentsumo_mcp.utils.path_utils import get_output_path
 
                     analysis_dir = get_output_path("output/analysis")
 
@@ -349,67 +492,84 @@ class AgentSUMO:
         start_time = time.time()
 
         logger.info(f"\nUser: {user_message}")
+        self._begin_execution(user_message)
 
-        # 0. Check for SQLite MCP auto-activation (auto-connect after DB creation)
-        await self._check_and_enable_sqlite_if_needed()
+        try:
+            # 0. Check for SQLite MCP auto-activation (auto-connect after DB creation)
+            await self._check_and_enable_sqlite_if_needed()
 
-        # 1. Append state context to the user message (Anthropic caching optimization)
+            # 1. Append state context to the user message (Anthropic caching optimization)
         # [Temporary] If inject_state=False, do not inject state (for SUMOLanguageExpert experiments)
-        if self._inject_state:
-            state_context = self.prompt_builder.format_context(self.simulation_state)
-            message_with_context = f"{state_context}\n\n---\n\n{user_message}"
-        else:
-            message_with_context = user_message
+            if self._inject_state:
+                state_context = self.prompt_builder.format_context(self.simulation_state)
+                message_with_context = f"{state_context}\n\n---\n\n{user_message}"
+            else:
+                message_with_context = user_message
 
-        self.conversation_history.append({
-            "role": "user",
-            "content": message_with_context
-        })
+            specialist_findings = await self._run_specialist_agents(user_message)
+            if specialist_findings:
+                message_with_context += specialist_findings
 
-        # 2. Call Claude (system prompt is fixed, state goes in the user message)
-        prompt_start = time.time()
-        system_prompt = self.prompt_builder.build_unified_prompt(
-            interface=self.interface
-        )
-        # Prepend custom system prompt if provided (e.g., demo mode)
-        if self._custom_system_prompt:
-            system_prompt = self._custom_system_prompt + "\n\n---\n\n" + system_prompt
-        prompt_time = time.time() - prompt_start
-        if prompt_time > 0.1:
-            logger.debug(f"Prompt build time. {prompt_time:.2f}s")
+            self.conversation_history.append({
+                "role": "user",
+                "content": message_with_context
+            })
 
-        claude_start = time.time()
-        response = self._call_claude(system_prompt)
-        claude_time = time.time() - claude_start
-        logger.debug(f"Claude API call time. {claude_time:.2f}s")
+            # 2. Call Claude (system prompt is fixed, state goes in the user message)
+            prompt_start = time.time()
+            system_prompt = self.prompt_builder.build_unified_prompt(
+                interface=self.interface
+            )
+            # Prepend custom system prompt if provided (e.g., demo mode)
+            if self._custom_system_prompt:
+                system_prompt = self._custom_system_prompt + "\n\n---\n\n" + system_prompt
+            prompt_time = time.time() - prompt_start
+            if prompt_time > 0.1:
+                logger.debug(f"Prompt build time. {prompt_time:.2f}s")
 
-        # Debug. print raw response
-        if self.debug:
-            self._debug_print_response(response)
+            claude_start = time.time()
+            response = self._call_model(system_prompt)
+            claude_time = time.time() - claude_start
+            logger.debug(f"Claude API call time. {claude_time:.2f}s")
 
-        # 3. Handle tool use
-        if response.stop_reason == "tool_use":
-            tool_start = time.time()
-            result = await self._handle_tool_use(response)
-            tool_time = time.time() - tool_start
-            logger.debug(f"Tool processing time. {tool_time:.2f}s")
+            # Debug. print raw response
+            if self.debug:
+                self._debug_print_response(response)
+
+            # 3. Handle tool use
+            if response.stop_reason == "tool_use":
+                tool_start = time.time()
+                result = await self._handle_tool_use(response)
+                tool_time = time.time() - tool_start
+                logger.debug(f"Tool processing time. {tool_time:.2f}s")
+                total_time = time.time() - start_time
+                logger.info(f"Total response time. {total_time:.2f}s")
+                self._finish_execution("completed")
+                return result
+
+            # 4. Plain text response (handle all content blocks)
+            assistant_text = self._extract_text_from_response(response)
+
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": response.content
+            })
+
             total_time = time.time() - start_time
-            logger.info(f"Total response time. {total_time:.2f}s")
-            return result
+            logger.info(f"AgentSUMO: {assistant_text[:100]}...")
+            logger.info(f"Total response time. {total_time:.2f}s (Claude. {claude_time:.2f}s)")
 
-        # 4. Plain text response (handle all content blocks)
-        assistant_text = self._extract_text_from_response(response)
+            self._finish_execution("completed")
+            return assistant_text
+        except Exception as exc:
+            self._finish_execution("failed", exc)
+            raise
 
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": response.content
-        })
-
-        total_time = time.time() - start_time
-        logger.info(f"AgentSUMO: {assistant_text[:100]}...")
-        logger.info(f"Total response time. {total_time:.2f}s (Claude. {claude_time:.2f}s)")
-
-        return assistant_text
+    def _call_model(self, system_prompt: str = None):
+        """Call the configured model provider and normalize its response."""
+        if self.provider == "groq":
+            return self._call_groq(system_prompt)
+        return self._call_claude(system_prompt)
 
     def _call_claude(self, system_prompt: str = None):
         """
@@ -470,6 +630,77 @@ class AgentSUMO:
         response = self.claude.messages.create(**api_params)
 
         return response
+
+    def _call_groq(self, system_prompt: str = None):
+        """Call Groq's OpenAI-compatible endpoint and match Claude's response shape."""
+        if system_prompt is None:
+            system_prompt = self.prompt_builder.build_unified_prompt(interface=self.interface)
+            if self._custom_system_prompt:
+                system_prompt = self._custom_system_prompt + "\n\n---\n\n" + system_prompt
+
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(self._groq_messages_from_history())
+        tools = [
+            {"type": "function", "function": {
+                "name": tool["name"], "description": tool["description"],
+                "parameters": tool["input_schema"],
+            }}
+            for tool in self.tools
+        ]
+        params = {"model": self.model, "messages": messages, "max_tokens": self.max_tokens}
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = "auto"
+
+        completion = self.groq.chat.completions.create(**params)
+        message = completion.choices[0].message
+        content = []
+        if message.content:
+            content.append(SimpleNamespace(type="text", text=message.content))
+        for call in message.tool_calls or []:
+            try:
+                arguments = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+            content.append(SimpleNamespace(
+                type="tool_use", id=call.id, name=call.function.name, input=arguments
+            ))
+        return SimpleNamespace(
+            content=content,
+            stop_reason="tool_use" if message.tool_calls else "end_turn",
+            model=completion.model,
+            usage=completion.usage,
+        )
+
+    def _groq_messages_from_history(self) -> List[Dict[str, Any]]:
+        """Translate the project's Claude-style history into OpenAI messages."""
+        messages = []
+        for item in self.conversation_history:
+            role, content = item["role"], item["content"]
+            if isinstance(content, str):
+                messages.append({"role": role, "content": content})
+                continue
+            if role == "assistant":
+                text = "\n".join(block.text for block in content if block.type == "text")
+                tool_calls = []
+                for block in content:
+                    if block.type == "tool_use":
+                        tool_calls.append({
+                            "id": block.id, "type": "function",
+                            "function": {"name": block.name, "arguments": json.dumps(block.input)}
+                        })
+                message = {"role": "assistant", "content": text or None}
+                if tool_calls:
+                    message["tool_calls"] = tool_calls
+                messages.append(message)
+            elif role == "user":
+                for block in content:
+                    if block["type"] == "tool_result":
+                        messages.append({
+                            "role": "tool", "tool_call_id": block["tool_use_id"],
+                            "content": str(block["content"]),
+                        })
+        return messages
 
     async def _handle_tool_use(self, response, _depth: int = 0) -> str:
         """
@@ -597,7 +828,7 @@ class AgentSUMO:
         # Call Claude again with the results
         # If _call_claude() fails, history is corrupted and must be repaired
         try:
-            final_response = self._call_claude()
+            final_response = self._call_model()
         except Exception as e:
             # Claude API call failed. tool_use + tool_result are already in history, so
             # append an empty assistant response to keep history consistent
@@ -790,12 +1021,7 @@ class AgentSUMO:
 
     def _get_state_file_path(self):
         """Get path to state persistence file"""
-        try:
-            # dev-ko branch ships the live source under agentsumo/server/;
-            # main branch uses the published agentsumo-mcp package.
-            from agentsumo.server.utils.path_utils import get_output_path
-        except ImportError:
-            from agentsumo_mcp.utils.path_utils import get_output_path
+        from agentsumo_mcp.utils.path_utils import get_output_path
         return get_output_path("output") / ".agentsumo_state.json"
 
     def _save_state(self):
@@ -844,12 +1070,7 @@ class AgentSUMO:
         # A: Fallback - scan output directories
         logger.info("State JSON not found, scanning output files...")
         try:
-            try:
-                # dev-ko branch ships the live source under agentsumo/server/;
-                # main branch uses the published agentsumo-mcp package.
-                from agentsumo.server.utils.path_utils import get_output_path
-            except ImportError:
-                from agentsumo_mcp.utils.path_utils import get_output_path
+            from agentsumo_mcp.utils.path_utils import get_output_path
             from pathlib import Path as P
 
             # Scan networks

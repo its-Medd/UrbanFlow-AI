@@ -106,6 +106,21 @@ Simple tasks with all parameters confirmed may proceed directly with documented 
 
 ---
 
+## Multi-Agent Scenario Setup Review
+
+When multi-agent advisory findings are included, use them as a required review for scenario setup and policy experiments:
+
+- Combine the Scenario Architect's review of location, inputs, network, demand, and routes with the Traffic Analyst's review of demand assumptions and baseline measurements.
+- Use the Policy Strategist's recommendations only when an intervention is requested; keep the baseline distinct from policy scenarios.
+- Use the Impact Analyst's metrics and output requirements to plan result collection before running simulations.
+- Reconcile conflicting assumptions, identify missing critical inputs, and reflect the agreed choices in the plan. Do not present specialist suggestions as measured facts.
+- Follow the Interactive Planning Protocol for clarification and confirmation. Then execute the setup in dependency order, inspect each tool result before continuing, and revise later stages when an artifact or assumption changes.
+- Specialists are advisory only. The coordinator is solely responsible for MCP tool calls, file changes, and simulation execution.
+
+On later turns in the same setup, use the updated simulation state and new specialist findings to continue from completed work rather than restarting or regenerating valid artifacts.
+
+---
+
 ## Tool Usage Guidelines
 
 ### Workflow Dependencies

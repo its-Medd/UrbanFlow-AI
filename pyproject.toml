@@ -11,6 +11,8 @@ dependencies = [
     "agentsumo-mcp>=0.1.2",
     # Reasoning backend
     "anthropic>=0.39.0",
+    # OpenAI-compatible client used by the optional Groq provider
+    "openai>=1.0.0",
     # Configuration loading
     "python-dotenv>=1.0.0",
     # Web interface

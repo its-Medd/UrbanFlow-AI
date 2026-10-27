@@ -91,15 +91,8 @@ class SUMOMCPClient:
         self._connection_attempts = 0
         self._last_error = None
         
-        # Resolve which AgentSUMO MCP server module to launch.
-        # Prefer an in-repo development copy at agentsumo/server/main.py if it
-        # exists (dev-ko branch). Otherwise fall back to the packaged release
-        # `agentsumo_mcp` (main branch / `pip install agentsumo-mcp`).
-        #
-        # NB: importlib.util.find_spec raises ModuleNotFoundError when the
-        # *parent* package is missing (e.g., 'agentsumo.server.main' on main,
-        # which has no agentsumo/server/ at all). The try/except below normalizes
-        # the absent-parent case into a False result so the fallback can fire.
+        # This repository bundles its MCP execution server. Keep the launch
+        # target explicit so local development and deployed copies behave alike.
         import importlib.util
 
         def _has_module(name: str) -> bool:
@@ -108,16 +101,12 @@ class SUMOMCPClient:
             except (ImportError, ModuleNotFoundError, ValueError):
                 return False
 
-        if _has_module("agentsumo.server.main"):
-            self.server_module = "agentsumo.server.main"
-        elif _has_module("agentsumo_mcp.main"):
+        if _has_module("agentsumo_mcp.main"):
             self.server_module = "agentsumo_mcp.main"
         else:
             raise ModuleNotFoundError(
-                "Neither agentsumo.server.main nor agentsumo_mcp.main is "
-                "importable. Install the published server with "
-                "`pip install agentsumo-mcp`, or run from a checkout that "
-                "contains agentsumo/server/."
+                "The bundled agentsumo_mcp.main server is not importable. "
+                "Run 'uv sync' to install the project dependencies."
             )
 
         logger.info(f"SUMOMCPClient initialized (server module: {self.server_module})")

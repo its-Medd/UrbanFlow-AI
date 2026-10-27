@@ -36,6 +36,27 @@ class AgentSUMOConfig:
 
     # Default Claude model
     DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+    # A tool-capable model listed on Groq's free-tier rate-limit page.
+    DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+
+    @classmethod
+    def get_llm_provider(cls) -> str:
+        """Return the configured reasoning provider (``anthropic`` or ``groq``)."""
+        provider = os.environ.get("LLM_PROVIDER", "anthropic").strip().lower()
+        if provider not in {"anthropic", "groq"}:
+            raise RuntimeError("LLM_PROVIDER must be either 'anthropic' or 'groq'.")
+        return provider
+
+    @classmethod
+    def get_groq_api_key(cls) -> str:
+        """Resolve the Groq API key when ``LLM_PROVIDER=groq``."""
+        key = os.environ.get("GROQ_API_KEY")
+        if key:
+            return key
+        raise RuntimeError(
+            "GROQ_API_KEY is not set. Add it to .env after creating a key at "
+            "https://console.groq.com/keys"
+        )
 
     @classmethod
     def get_claude_api_key(cls) -> str:

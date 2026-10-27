@@ -125,7 +125,9 @@ def create_app() -> FastAPI:
         # Fail-fast environment check. Surface missing/broken configuration
         # at startup rather than letting the first chat message hit a
         # cryptic "MCP connection failed" further down the stack.
-        required = ["ANTHROPIC_API_KEY", "MAPBOX_TOKEN", "SUMO_HOME"]
+        llm_provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+        llm_key = "GROQ_API_KEY" if llm_provider == "groq" else "ANTHROPIC_API_KEY"
+        required = [llm_key, "MAPBOX_TOKEN", "SUMO_HOME"]
         missing = [k for k in required if not os.environ.get(k)]
         if missing:
             logger.error(
@@ -153,8 +155,8 @@ def create_app() -> FastAPI:
         logger.info("AgentSUMO Web stopped")
 
     app = FastAPI(
-        title="AgentSUMO Web",
-        description="AI-Powered SUMO Traffic Simulation Platform",
+        title="UrbanFlow AI",
+        description="Hackathon-ready urban mobility simulation command center",
         version="0.1.0",
         lifespan=lifespan
     )
@@ -211,6 +213,23 @@ def create_app() -> FastAPI:
                 content={"error": str(e)},
                 status_code=500
             )
+
+    @app.get("/api/operations")
+    async def list_operations(limit: int = 20):
+        """Return recorded agent runs and their real tool-execution timeline."""
+        try:
+            path = AgentSUMOConfig.OUTPUT_DIR / ".agent_executions.json"
+            if not path.exists():
+                return JSONResponse(content={"operations": [], "count": 0})
+            operations = json.loads(path.read_text())
+            limit = max(1, min(limit, 50))
+            return JSONResponse(content={
+                "operations": operations[:limit],
+                "count": len(operations),
+            })
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("Could not read operation history: %s", exc)
+            return JSONResponse(content={"error": "Operation history is unavailable", "operations": []}, status_code=500)
 
     @app.get("/api/networks")
     async def list_networks():
@@ -1551,12 +1570,7 @@ def create_app() -> FastAPI:
             JSON with status of the launch
         """
         try:
-            try:
-                # dev-ko branch ships the live source under agentsumo/server/;
-                # main branch uses the published agentsumo-mcp package.
-                from agentsumo.server.settings.settings import sumo_environment
-            except ImportError:
-                from agentsumo_mcp.settings.settings import sumo_environment
+            from agentsumo_mcp.settings.settings import sumo_environment
             import platform
 
             # Find the config file
