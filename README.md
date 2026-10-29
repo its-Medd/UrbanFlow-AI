@@ -1,99 +1,258 @@
+<div align="center">
+
+<img src="web/static/ditwin-logo.svg" alt="Ditwin logo" width="220">
+
 # Ditwin
 
-Ditwin is a Python workspace for georeferenced SUMO road simulations and water balance forecasts. It combines a 3D map, recorded simulation replay, heatmaps, SQLite analysis, and an optional AI assistant. The workspace starts empty. No example traffic, artificial water readings, illustrative facility pins, or predefined assistant answers are supplied.
+### A digital twin workspace for urban mobility and water planning
 
-## Install and run
+Explore Laâyoune in 3D, run road simulations, and evaluate water scenarios using your own data.
 
-Requirements: Python 3.12 or 3.13, SUMO 1.24+ for traffic execution, and a WebGL browser. The optional AI tool integration also requires Node.js/npm for the filesystem MCP server.
+[![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Tests](https://github.com/its-Medd/UrbanFlow-AI/actions/workflows/tests.yml/badge.svg)](https://github.com/its-Medd/UrbanFlow-AI/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+[Getting started](#getting-started) ·
+[Features](#features) ·
+[Architecture](#architecture) ·
+[Team](#team) ·
+[Acknowledgements](#acknowledgements)
+
+</div>
+
+---
+
+## Overview
+
+A road disruption or a water shortage can affect an entire city. Ditwin provides a workspace for examining these situations through geographic visualization, traffic simulation, and water balance calculations.
+
+The project focuses on Laâyoune while supporting imported georeferenced road networks and user-supplied water measurements.
+
+Ditwin starts with an empty operational workspace. Road inputs, water measurements, and AI credentials must come from the user.
+
+## Features
+
+### Geographic workspace
+
+- Explore mapped buildings in a 3D view.
+- Display imported road networks in their geographic locations.
+- Inspect road properties and switch map perspectives.
+- Use MapLibre and OpenStreetMap without a Mapbox token.
+
+Building geometry comes from external geographic providers. Available heights may be inferred and should not be treated as surveyed measurements.
+
+### Road simulation
+
+- Import georeferenced SUMO networks and matching demand files.
+- Configure named simulation runs.
+- Execute simulations through the SUMO engine.
+- Follow job status and inspect recorded results.
+- Review replay, heatmaps, and analysis when their output files are available.
+
+Simulation results describe the supplied traffic demand. They are not live traffic observations.
+
+### Water planning
+
+- Import production, demand, storage, and capacity measurements.
+- Retain the source reference and observation timestamp.
+- Evaluate production losses and demand reductions.
+- Forecast storage over a selected horizon.
+- Calculate unmet demand and storage overflow.
+
+The water model uses an hourly storage mass balance with constant rates. It does not simulate hydraulic pressure or control infrastructure.
+
+### Optional AI assistant
+
+- Connect an Anthropic or Groq provider.
+- Use the existing AgentSUMO coordination and MCP tools.
+- Work with simulation files and analysis through configured integrations.
+
+AI chat remains unavailable until a valid provider credential is configured. Direct road and water workflows do not require an AI key.
+
+## Getting started
+
+### Requirements
+
+| Requirement | Purpose |
+|---|---|
+| Python 3.12 or 3.13 | Application runtime |
+| SUMO 1.24 or later | Road simulation |
+| WebGL-capable browser | Interactive map |
+| Internet connection | External map tiles and browser resources |
+| Node.js and npm | Optional filesystem MCP integration |
+| Anthropic or Groq credential | Optional AI assistant |
+
+### Clone the repository
+
+```bash
+git clone https://github.com/its-Medd/UrbanFlow-AI.git
+cd UrbanFlow-AI
+```
+
+### Install on Windows
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
 python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
+```
+
+### Install on Linux or macOS
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+
+python -m pip install -e ".[dev]"
+cp .env.example .env
+```
+
+### Configure the environment
+
+Edit `.env` for your installation.
+
+| Variable | Description |
+|---|---|
+| `SUMO_HOME` | SUMO installation root containing `bin/sumo` or `bin/sumo.exe` |
+| `LLM_PROVIDER` | `anthropic` or `groq` |
+| `ANTHROPIC_API_KEY` | Server credential for Anthropic |
+| `GROQ_API_KEY` | Server credential for Groq |
+| `LLM_MODEL` | Optional tool-capable model identifier |
+| `MULTI_AGENT_MODE` | Enables specialist advisory calls through the configured provider |
+| `MAPBOX_TOKEN` | Optional public `pk.` token; leave blank for MapLibre and OpenStreetMap |
+| `AGENTSUMO_MCP_OUTPUT_BASE` | Optional workspace root; runtime files use `<root>/output` |
+
+SUMO can also be discovered through `PATH`.
+
+Never commit `.env`, private tokens, or provider credentials.
+
+### Start Ditwin
+
+```bash
 python -m uvicorn web.app:app --host 127.0.0.1 --port 8000
 ```
 
-On Linux/macOS use `source .venv/bin/activate` and `cp .env.example .env`. Alternatively use `uv sync --extra dev` and `uv run ditwin`. Open http://127.0.0.1:8000. API documentation is at `/docs` and capability status at `/api/health`.
+Open:
 
-## Configuration
+- Application: http://127.0.0.1:8000
+- API documentation: http://127.0.0.1:8000/docs
+- Capability status: http://127.0.0.1:8000/api/health
 
-| Variable | Purpose |
-|---|---|
-| `SUMO_HOME` | SUMO installation root containing `bin/sumo` or `bin/sumo.exe`. Discovery through PATH is also supported. |
-| `LLM_PROVIDER` | `groq` or `anthropic`. |
-| `GROQ_API_KEY`, `ANTHROPIC_API_KEY` | Server credential for the chosen provider. Without a key, chat stays unavailable and direct simulation workflows remain usable. |
-| `LLM_MODEL` | Optional tool-capable model identifier. |
-| `MULTI_AGENT_MODE` | Optional specialist advisory calls through the configured AI provider. These incur real provider usage. |
-| `MAPBOX_TOKEN` | Optional public `pk.` browser token. Leave blank for MapLibre and OpenStreetMap. |
-| `AGENTSUMO_MCP_OUTPUT_BASE` | Optional workspace root. The UI and simulation tools use `<root>/output`. |
+Alternatively, use:
 
-Keep `.env` and credentials out of Git. Map tiles require internet access. Browser fonts and icons also use external CDNs. Building footprints come from OpenStreetMap via OpenFreeMap. Provider building heights can be inferred and must not be treated as surveyed dimensions. Preserve map attribution.
+```bash
+uv sync --extra dev
+uv run ditwin
+```
 
 ## Road workflow
 
-1. Import a georeferenced SUMO `.net.xml` and a matching `.rou.xml` or `.trips.xml` using the workspace import control. Files use real geographic coordinates for display. Local XY networks without a projection are rejected.
-2. Open **Road simulation**, select both assets, name the run and choose a duration from 30 to 7200 seconds.
-3. Review the job in **Runs**. Replay, heatmaps and analysis become available only when their output files exist. SUMO failures surface as failed jobs.
+1. Import a georeferenced `.net.xml` network.
+2. Import matching `.rou.xml` or `.trips.xml` demand.
+3. Open **Road simulation**.
+4. Select the assets, name the run, and choose its duration.
+5. Start the simulation and follow its status in **Runs**.
+6. Open the available replay, heatmap, or analysis outputs.
 
-Traffic demand must come from your own data preparation process. Ditwin does not supply measured traffic or generate traffic observations. SUMO outputs are simulations of the input demand, not live road conditions.
+Supported run durations range from **30 to 7200 seconds**.
+
+Networks without a geographic projection are rejected because local XY coordinates cannot be positioned reliably on the map. Demand must reference the selected network.
 
 ## Water workflow
 
-Open **Water simulation**, select a JSON file containing your measurements and click **Import measurements**. All fields are required:
+Open **Water simulation**, select a JSON measurements file, and choose **Import measurements**.
 
-| Field | Required value |
+### Required measurement fields
+
+| Field | Description |
 |---|---|
-| `source` | Nonempty source name or dataset reference, up to 200 characters |
-| `observed_at` | ISO 8601 timestamp including a timezone |
-| `production_m3_day` | Measured production rate in cubic metres per day, zero or greater |
-| `demand_m3_day` | Measured demand rate in cubic metres per day, zero or greater |
-| `storage_m3` | Usable measured storage in cubic metres, zero or greater |
-| `storage_capacity_m3` | Positive usable storage capacity, at least the current storage |
+| `source` | Source name or dataset reference, up to 200 characters |
+| `observed_at` | ISO 8601 observation timestamp including a timezone |
+| `production_m3_day` | Production rate in cubic metres per day |
+| `demand_m3_day` | Demand rate in cubic metres per day |
+| `storage_m3` | Current usable storage in cubic metres |
+| `storage_capacity_m3` | Positive usable storage capacity in cubic metres |
 
-Unknown fields, nonfinite numbers and invalid storage ranges are rejected. Data persists locally under `output/water/measurements.json`. Importing replaces the current measurements. Record source and measurement time accurately; the application validates structure but cannot verify that supplied readings are authentic or current.
+Production, demand, and storage must be nonnegative. Storage cannot exceed capacity. Unknown fields and nonfinite numbers are rejected.
 
-Choose a forecast horizon of 1–168 hours, production loss and demand reduction percentages. The hourly mass balance applies constant adjusted rates, caps storage at capacity and records unmet demand and overflow. Results retain the source timestamp. This is a planning calculation, not hydraulic pressure modeling, sensor ingestion or infrastructure control. There are no preset production, demand, reserve, district shares or facility coordinates.
+Imported measurements are stored in:
 
-API: `PUT /api/water/measurements`, `GET /api/water/measurements`, `POST /api/water/forecast`. Forecasts require imported measurements and otherwise return HTTP 409.
+```text
+output/water/measurements.json
+```
+
+Importing a new file replaces the current measurements.
+
+### Forecast settings
+
+- Horizon: **1–168 hours**
+- Production loss: **0–100%**
+- Demand reduction: **0–100%**
+
+The calculation adjusts the supplied rates, updates storage each hour, and records unmet demand and overflow. The application validates the input structure; users remain responsible for the accuracy and freshness of their measurements.
 
 ## Architecture
 
-| Component | Location |
-|---|---|
-| FastAPI routes and AI WebSocket | `web/app.py` |
-| Safe imports, readiness and SUMO job queue | `web/workspace.py` |
-| Validated water inputs and storage model | `web/water.py` |
-| Main map and workspace interface | `web/templates/index.html`, `web/static/workspace.js` |
-| Water import and chart interface | `web/static/water.js` |
-| Geographic building layer | `web/static/ditwin-city.js` |
-| AI coordination and MCP clients | `agentsumo/` |
-| SUMO tool server and execution | `agentsumo_mcp/` |
-| Local files, job history and SQLite results | `output/` (ignored by Git) |
-
-The Python package names remain `agentsumo` and `agentsumo_mcp` for compatibility with the upstream code. The application command and visual brand are Ditwin. The MIT license and upstream notices remain in place.
-
-## Development checks
-
-```powershell
-python -m pytest tests/ -q
-git diff --check
-git status --short
+```text
+Browser
+   |
+   v
+FastAPI application
+   |
+   +-- Geographic workspace
+   |      +-- MapLibre / optional Mapbox
+   |      +-- OpenStreetMap / OpenFreeMap
+   |
+   +-- Road workflow
+   |      +-- Validated network and demand imports
+   |      +-- SUMO execution
+   |      +-- Replay, heatmaps and SQLite analysis
+   |
+   +-- Water workflow
+   |      +-- Measurement validation
+   |      +-- Hourly storage balance
+   |
+   +-- Optional AI assistant
+          +-- Anthropic / Groq
+          +-- SUMO MCP tools
+          +-- SQLite MCP integration
+          +-- Filesystem MCP integration
 ```
 
-Test fixtures exist only inside tests and temporary test directories. They do not populate the application. GitHub Actions installs development dependencies and runs the test suite. Generated assets, caches, credentials and runtime outputs are excluded from source distribution archives.
+## Project structure
 
-## Git handoff
-
-Review your changes and environment before committing:
-
-```powershell
-git status --short
-git add .
-git diff --cached --stat
-git commit -m "Prepare Ditwin with imported data workflows"
+```text
+UrbanFlow-AI/
+├── agentsumo/               # AI coordination, clients and configuration
+├── agentsumo_mcp/           # SUMO tool server and execution
+├── web/
+│   ├── app.py               # FastAPI application and AI WebSocket
+│   ├── workspace.py         # Imports, readiness and simulation jobs
+│   ├── water.py             # Water measurements and forecast API
+│   ├── cli.py               # Ditwin command
+│   ├── templates/           # Main interface
+│   └── static/              # Styles, scripts, branding and vendor assets
+├── tests/                   # Automated checks
+├── docs/                    # Documentation and upstream references
+├── output/                  # Local runtime data, excluded from Git
+├── .github/workflows/       # Continuous integration
+├── .env.example             # Configuration template
+├── pyproject.toml           # Dependencies and package configuration
+├── README.md
+└── LICENSE
 ```
 
-Set the remote to your own Git repository before pushing. This cleanup does not publish to GitHub or alter the existing remote. Verify authentication, network exposure and provider quotas before deployment. The current server is a single-workspace application without user authentication or tenant isolation. Restrict it to trusted users or place access control in front of it.
+The application uses the Ditwin brand. Python package names remain `agentsumo` and `agentsumo_mcp` for compatibility with the upstream implementation.
 
-For a temporary sharing session run `cloudflared tunnel --url http://127.0.0.1:8000`. The backend and tunnel must stay running; a quick tunnel receives a new URL when restarted. This does not make the application a managed production service.
+## Water API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/water/measurements` | Read imported measurements |
+| `PUT` | `/api/water/measurements` | Validate and replace measurements |
+| `POST` | `/api/water/forecast` | Calculate a storage forecast |
+
+Forecast requests return HTTP **409
