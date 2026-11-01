@@ -30,7 +30,9 @@ source_suffix = {
 }
 
 master_doc = "index"
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+# Keep the original repository README as an attribution artifact. Its relative
+# repository links are not Sphinx documentation pages.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "UPSTREAM_README.md"]
 templates_path = ["_templates"]
 
 # Avoid duplicate-label warnings when autosectionlabel sees common headings.

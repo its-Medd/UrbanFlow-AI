@@ -16,7 +16,7 @@ Usage:
 """
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from agentsumo.client.stdio_transport import OwnedStdioSession
 from typing import Any, Optional, List, Union
 import asyncio
 import shutil
@@ -100,22 +100,8 @@ class FilesystemMCPClient:
         )
 
         try:
-            # STDIO connection
-            self._stdio_context_manager = stdio_client(server_params)
-            read, write = await asyncio.wait_for(
-                self._stdio_context_manager.__aenter__(),
-                timeout=self.connection_timeout / 2
-            )
-
-            # Session
-            self._session_context_manager = ClientSession(read, write)
-            self.session = await self._session_context_manager.__aenter__()
-
-            # Initialize handshake
-            await asyncio.wait_for(
-                self.session.initialize(),
-                timeout=self.connection_timeout / 2
-            )
+            self._transport = OwnedStdioSession()
+            self.session = await self._transport.start(server_params, self.connection_timeout)
 
             self._connected = True
             logger.info("Filesystem MCP Server connection established")
@@ -126,24 +112,13 @@ class FilesystemMCPClient:
             raise RuntimeError(f"Filesystem MCP Server connection failed - {e}")
 
     async def _disconnect(self):
-        """Disconnect from server"""
-        if not self._connected:
-            return
-
-        logger.info("Closing Filesystem MCP Server connection")
-
+        """Close the transport in its owning task, even across web requests."""
+        transport = getattr(self, '_transport', None)
         try:
-            if self._session_context_manager:
-                await self._session_context_manager.__aexit__(None, None, None)
-
-            if self._stdio_context_manager:
-                await self._stdio_context_manager.__aexit__(None, None, None)
-
-            self._connected = False
-            logger.info("Filesystem MCP connection closed")
-
-        except Exception as e:
-            logger.warning(f"Error while closing connection (ignored) - {e}")
+            if transport is not None:
+                await transport.close()
+        finally:
+            self.session = None
             self._connected = False
 
     async def list_tools(self) -> List[Any]:

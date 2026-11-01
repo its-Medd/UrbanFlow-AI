@@ -204,16 +204,18 @@ def create_app() -> FastAPI:
         except RuntimeError:
             mapbox_token = ""
         return templates.TemplateResponse(
-            "index.html",
-            {"request": request, "mapbox_token": mapbox_token}
+            request=request,
+            name="index.html",
+            context={"mapbox_token": mapbox_token}
         )
 
     @app.get("/landing")
     async def landing_page(request: Request):
         """Landing page (design preview)"""
         return templates.TemplateResponse(
-            "landing.html",
-            {"request": request}
+            request=request,
+            name="landing.html",
+            context={}
         )
 
     @app.get("/preview")
@@ -224,8 +226,9 @@ def create_app() -> FastAPI:
         except RuntimeError:
             mapbox_token = ""
         return templates.TemplateResponse(
-            "main_dark.html",
-            {"request": request, "mapbox_token": mapbox_token}
+            request=request,
+            name="main_dark.html",
+            context={"mapbox_token": mapbox_token}
         )
 
     @app.get("/api/state")

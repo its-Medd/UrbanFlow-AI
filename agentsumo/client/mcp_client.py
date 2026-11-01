@@ -3,7 +3,7 @@ MCP Client for AgentSUMO
 """
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from agentsumo.client.stdio_transport import OwnedStdioSession
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from agentsumo.core import AgentSUMOConfig
@@ -176,49 +176,22 @@ class SUMOMCPClient:
             cwd=str(AgentSUMOConfig.PROJECT_ROOT)
         )
 
-        # STDIO context manager (with timeout)
-        self._stdio_context_manager = stdio_client(server_params)
-        read, write = await asyncio.wait_for(
-            self._stdio_context_manager.__aenter__(),
-            timeout=self.connection_timeout / 2
-        )
-
-        # Session context manager
-        self._session_context_manager = ClientSession(read, write)
-        self.session = await self._session_context_manager.__aenter__()
-
-        # Initialization handshake (with timeout)
-        await asyncio.wait_for(
-            self.session.initialize(),
-            timeout=self.connection_timeout / 2
-        )
+        self._transport = OwnedStdioSession()
+        self.session = await self._transport.start(server_params, self.connection_timeout)
 
         self._connected = True
         logger.info("MCP Server connection established")
 
-    async def _disconnect(self) -> None:
-        """Close connection"""
-        if not self._connected:
-            return
-
-        logger.info("Closing MCP Server connection")
-
+    async def _disconnect(self):
+        """Close the transport in its owning task, even across web requests."""
+        transport = getattr(self, '_transport', None)
         try:
-            # Close session
-            if self._session_context_manager:
-                await self._session_context_manager.__aexit__(None, None, None)
-
-            # Close STDIO
-            if self._stdio_context_manager:
-                await self._stdio_context_manager.__aexit__(None, None, None)
-
+            if transport is not None:
+                await transport.close()
+        finally:
+            self.session = None
             self._connected = False
-            logger.info("Connection closed")
 
-        except Exception as e:
-            logger.error(f"Error while closing connection - {e}")
-            self._connected = False
-    
     async def list_tools(self) -> List[Any]:
         """
         Get the list of available tools.

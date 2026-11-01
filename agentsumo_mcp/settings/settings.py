@@ -8,9 +8,12 @@ from pathlib import Path
 
 
 def _load_sumo_home() -> str:
-    """Load SUMO_HOME from sumo_home.txt or environment variable."""
+    """Resolve explicit configuration before discovering an installed binary."""
+    env_path = os.environ.get("SUMO_HOME", "").strip()
+    if env_path:
+        return str(Path(env_path).expanduser())
     # Check sumo_home.txt at the project root
-    project_root = Path(__file__).parent.parent.parent.parent
+    project_root = Path(__file__).resolve().parents[2]
     sumo_home_file = project_root / "sumo_home.txt"
 
     # 1. Load from file
@@ -20,19 +23,16 @@ def _load_sumo_home() -> str:
             if path:
                 return path
 
-    # 2. Load from environment variable
-    env_path = os.environ.get("SUMO_HOME")
-    if env_path:
-        return env_path
-
-    # 3. Default (macOS)
-    return "/Library/Frameworks/EclipseSUMO.framework/Versions/1.24.0/EclipseSUMO"
+    executable = shutil.which('sumo')
+    if executable:
+        return str(Path(executable).resolve().parent.parent)
+    return ""
 
 
 class SUMOEnvironment:
     """SUMO environment settings."""
 
-    # SUMO environment (sumo_home.txt > env var > default)
+    # SUMO environment (env var > legacy file > PATH discovery)
     SUMO_HOME = _load_sumo_home()
 
     # Base paths
